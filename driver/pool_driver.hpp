@@ -707,12 +707,26 @@ int PoolDriver_impl<Tgpu, Tref, Index>::VerifyBackward()
                                           windowWidth,
                                           pad_w,
                                           stride_w,
-                                          dInputTensor,
-                                          dOutputTensor,
                                           // host output
                                           dinhost.data(),
                                           dout.data(),
-                                          maskhost.data());
+                                          maskhost.data(),
+                                          ndInStride,
+                                          cdInStride,
+                                          ddInStride,
+                                          hdInStride,
+                                          wIn,
+                                          hIn,
+                                          dIn,
+                                          cOut,
+                                          nOut,
+                                          ndOutStride,
+                                          cdOutStride,
+                                          ddOutStride,
+                                          hdOutStride,
+                                          wOut,
+                                          hOut,
+                                          dOut);
 
     bool match            = true;
     const Tref allowedEps = (1 << 2);
@@ -720,8 +734,20 @@ int PoolDriver_impl<Tgpu, Tref, Index>::VerifyBackward()
     Tref max_abs_diff     = 1. / 1000000; // 100000000;
     bool get_error_pos    = true;
 
-    match = mloVerify<Tgpu, Tref>(dInputTensor,
-                                  dInputTensor,
+    match = mloVerify<Tgpu, Tref>(spatial_dim,
+                                  nIn,
+                                  cIn,
+                                  dIn,
+                                  hIn,
+                                  wIn,
+                                  ndInStride,
+                                  cdInStride,
+                                  ddInStride,
+                                  hdInStride,
+                                  ndInStride,
+                                  cdInStride,
+                                  ddInStride,
+                                  hdInStride,
                                   dinhost.data(),
                                   din.data(),
                                   allowedEps,
