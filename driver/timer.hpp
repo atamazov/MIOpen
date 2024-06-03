@@ -124,6 +124,13 @@ public:
                    .count() -
                paused;
     }
+    float interim_time_ms()
+    {
+        assert(state == Paused);
+        return std::chrono::duration_cast<std::chrono::duration<float, std::milli>>(pst - st)
+                   .count() -
+               paused;
+    }
 
 private:
     enum

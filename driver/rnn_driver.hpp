@@ -789,10 +789,16 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
     if(inflags.GetValueInt("forw") != 0 && !(inflags.GetValueInt("forw") & 1))
         return miopenStatusSuccess;
 
-    Timer t;
-    float wl_time_forward = 0.0;
-    float kl_time_forward = 0.0;
+    float kernel_total_time = 0;
+    float kernel_first_time = 0;
+    float wall_first_time   = 0;
+    Timer2 t;
 
+    if(inflags.GetValueInt("fwdtype") == 1 && inflags.GetValueInt("forw") != 1)
+        std::cout << "Warning: Inference type is only valid for Forward RNN" << std::endl;
+
+    t.start();
+    t.pause();
     for(int i = 0; i < num_iter; i++)
     {
         std::fill(out.begin(), out.end(), static_cast<Tgpu>(0));
@@ -807,10 +813,7 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
             reservespace_dev->ToGPU(q, reservespace.data());
         }
 
-        if(inflags.GetValueInt("fwdtype") == 1 && inflags.GetValueInt("forw") != 1)
-            std::cout << "Warning: Inference type is only valid for Forward RNN!" << std::endl;
-
-        t.start();
+        t.resume();
         if(inflags.GetValueInt("fwdtype") == 0)
         {
             miopenRNNForwardTraining(GetHandle(),
@@ -858,28 +861,38 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
                                       workspace_dev->GetSize());
         }
         miopen::deref(GetHandle()).Finish();
-        t.stop();
+        t.pause();
 
-        if(i > 0 || num_iter == 1)
+        float time = 0;
+        miopenGetKernelTime(GetHandle(), &time);
+        kernel_total_time += time;
+        if(i == 0)
         {
-            float time = 0.0;
-            miopenGetKernelTime(GetHandle(), &time);
-            // printf("wall time: %f\n", t.gettime_ms());
-            wl_time_forward += t.gettime_ms();
-            kl_time_forward += time;
+            kernel_first_time = time;
+            wall_first_time   = t.interim_time_ms();
         }
     }
+    t.stop();
 
-    if(is_time == 1)
+    auto gpu_time      = kernel_first_time;
+    auto wall_time     = wall_first_time;
+    auto aux_wall_time = 0.0f;
+    if(num_iter > 1)
     {
-        int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
-        printf("GPU Kernel Time Forward RNN Elapsed: %f ms\n", kl_time_forward / n_iter);
+        gpu_time      = (kernel_total_time - kernel_first_time) / (num_iter - 1);
+        wall_time     = (t.gettime_ms() - wall_first_time) / (num_iter - 1);
+        aux_wall_time = wall_first_time - wall_time;
     }
+
+    if(is_time)
+        printf("GPU Kernel Time Forward RNN Elapsed: %f ms\n", gpu_time);
 
     if(is_wall)
     {
-        int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
-        printf("Wall-clock Time Forward RNN Elapsed: %f ms\n", wl_time_forward / n_iter);
+        printf("Wall-clock Time Forward RNN Elapsed: %f ms", wall_time);
+        if(num_iter > 1)
+            printf(", First Call Overhead: %f ms", aux_wall_time);
+        printf("\n");
     }
 
     out_dev->FromGPU(GetStream(), out.data());
