@@ -170,12 +170,9 @@ private:
     float dropout_rate;
     unsigned long long dropout_seed;
 
-    //    std::string GetVerificationCacheFileName() const;
-    //    bool TryReadVerificationCache(const std::string& file_name,
-    //                                  miopenTensorDescriptor_t& tensorDesc,
-    //                                  Tgpu* data) const;
-    //    void TrySaveVerificationCache(const std::string& file_name, std::vector<Tgpu>& data)
-    //    const;
+    bool is_time = false;
+    bool is_wall = false;
+    int num_iter = 1;
 };
 
 static inline bool CheckGuard(const int& in_h,
@@ -195,10 +192,15 @@ int RNNDriver<Tgpu, Tref>::ParseCmdLineArgs(int argc, char* argv[])
 {
     inflags.Parse(argc, argv);
 
-    if(inflags.GetValueInt("time") == 1)
+    num_iter = inflags.GetValueInt("iter");
+    if(num_iter < 1)
     {
-        miopenEnableProfiling(GetHandle(), true);
+        std::cout << "Fatal: Number of iterations must be > 0: " << num_iter << std::endl;
+        return 1;
     }
+    is_time = (inflags.GetValueInt("time") != 0);
+    is_wall = (inflags.GetValueInt("wall") != 0);
+
     return miopenStatusSuccess;
 }
 
@@ -228,6 +230,9 @@ int RNNDriver<Tgpu, Tref>::GetandSetData()
 
     SetRNNDescriptorFromCmdLineArgs();
     miopenGetRNNParamsDescriptor(handle, rnnDesc, inputTensor, weightTensor, data_type);
+
+    if(is_time)
+        miopenEnableProfiling(GetHandle(), true);
 
     return miopenStatusSuccess;
 }
@@ -788,7 +793,7 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
     float wl_time_forward = 0.0;
     float kl_time_forward = 0.0;
 
-    for(int i = 0; i < inflags.GetValueInt("iter"); i++)
+    for(int i = 0; i < num_iter; i++)
     {
         std::fill(out.begin(), out.end(), static_cast<Tgpu>(0));
         out_dev->ToGPU(GetStream(), out.data());
@@ -802,7 +807,10 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
             reservespace_dev->ToGPU(q, reservespace.data());
         }
 
-        START_TIME
+        if(inflags.GetValueInt("fwdtype") == 1 && inflags.GetValueInt("forw") != 1)
+            std::cout << "Warning: Inference type is only valid for Forward RNN!" << std::endl;
+
+        t.start();
         if(inflags.GetValueInt("fwdtype") == 0)
         {
             miopenRNNForwardTraining(GetHandle(),
@@ -829,11 +837,6 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
         }
         else if(inflags.GetValueInt("fwdtype") == 1)
         {
-            if(inflags.GetValueInt("forw") != 1)
-            {
-                printf("Warning: Inference type is only valid for Forward RNN! \n");
-            }
-
             miopenRNNForwardInference(GetHandle(),
                                       rnnDesc,
                                       adjustedSeqLen,
@@ -855,9 +858,9 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
                                       workspace_dev->GetSize());
         }
         miopen::deref(GetHandle()).Finish();
-        STOP_TIME
+        t.stop();
 
-        if(i > 0 || inflags.GetValueInt("iter") == 1)
+        if(i > 0 || num_iter == 1)
         {
             float time = 0.0;
             miopenGetKernelTime(GetHandle(), &time);
@@ -867,17 +870,15 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
         }
     }
 
-    if(inflags.GetValueInt("time") == 1)
+    if(is_time == 1)
     {
-        int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                     : inflags.GetValueInt("iter");
+        int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
         printf("GPU Kernel Time Forward RNN Elapsed: %f ms\n", kl_time_forward / n_iter);
     }
 
-    if(WALL_CLOCK)
+    if(is_wall)
     {
-        int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                     : inflags.GetValueInt("iter");
+        int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
         printf("Wall-clock Time Forward RNN Elapsed: %f ms\n", wl_time_forward / n_iter);
     }
 
@@ -1117,9 +1118,9 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
 
         workspace_dev->ToGPU(q, workspace.data());
 
-        for(int i = 0; i < inflags.GetValueInt("iter"); i++)
+        for(int i = 0; i < num_iter; i++)
         {
-            START_TIME
+            t.start();
             ret = miopenRNNBackwardData(GetHandle(),
                                         rnnDesc,
                                         adjustedSeqLen,
@@ -1148,8 +1149,9 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
                                         reservespace_dev->GetMem(),
                                         reservespace_dev->GetSize());
             miopen::deref(GetHandle()).Finish();
-            STOP_TIME
-            if(i > 0 || inflags.GetValueInt("iter") == 1)
+            t.stop();
+
+            if(i > 0 || num_iter == 1)
             {
                 float time = 0.0;
                 miopenGetKernelTime(GetHandle(), &time);
@@ -1158,18 +1160,16 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
             }
         }
 
-        if(inflags.GetValueInt("time") == 1)
+        if(is_time == 1)
         {
-            int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                         : inflags.GetValueInt("iter");
+            int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
             printf("GPU Kernel Time Backward Data RNN Elapsed: %f ms\n",
                    kl_time_backward_data / n_iter);
         }
 
-        if(WALL_CLOCK)
+        if(is_wall)
         {
-            int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                         : inflags.GetValueInt("iter");
+            int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
             printf("Wall-clock Time Backward Data RNN Elapsed: %f ms\n",
                    wl_time_backward_data / n_iter);
         }
@@ -1186,9 +1186,9 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
         float wl_time_backward_weight = 0.0;
         float kl_time_backward_weight = 0.0;
 
-        for(int i = 0; i < inflags.GetValueInt("iter"); i++)
+        for(int i = 0; i < num_iter; i++)
         {
-            START_TIME
+            t.start();
             ret = miopenRNNBackwardWeights(GetHandle(),
                                            rnnDesc,
                                            adjustedSeqLen,
@@ -1205,8 +1205,9 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
                                            reservespace_dev->GetMem(),
                                            reservespace_dev->GetSize());
             miopen::deref(GetHandle()).Finish();
-            STOP_TIME
-            if(i > 0 || inflags.GetValueInt("iter") == 1)
+            t.stop();
+
+            if(i > 0 || num_iter == 1)
             {
                 float time = 0.0;
                 miopenGetKernelTime(GetHandle(), &time);
@@ -1215,18 +1216,16 @@ int RNNDriver<Tgpu, Tref>::RunBackwardGPU()
             }
         }
 
-        if(inflags.GetValueInt("time") == 1)
+        if(is_time == 1)
         {
-            int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                         : inflags.GetValueInt("iter");
+            int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
             printf("GPU Kernel Time Backward Weights RNN Elapsed: %f ms\n",
                    kl_time_backward_weight / n_iter);
         }
 
-        if(WALL_CLOCK)
+        if(is_wall)
         {
-            int n_iter = inflags.GetValueInt("iter") > 1 ? inflags.GetValueInt("iter") - 1
-                                                         : inflags.GetValueInt("iter");
+            int n_iter = num_iter > 1 ? num_iter - 1 : num_iter;
             printf("Wall-clock Time Backward Weights RNN Elapsed: %f ms\n",
                    wl_time_backward_weight / n_iter);
         }
