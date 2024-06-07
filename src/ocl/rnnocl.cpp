@@ -36,7 +36,8 @@
 #include <numeric>
 #include <algorithm>
 
-MIOPEN_DECLARE_ENV_VAR_BOOL(MIOPEN_RNNFWD_exp)
+MIOPEN_DECLARE_ENV_VAR_BOOL(MIOPEN_RNNFWD_EXP)
+MIOPEN_DECLARE_ENV_VAR(MIOPEN_ROCBLAS_SOLUTION_INDEX2, uint64_t, static_cast<uint64_t>(-1))
 
 namespace miopen {
 
@@ -58,10 +59,10 @@ bool RNNForwardMSIsSupported([[maybe_unused]] const RNNDescriptor& desctiptor,
 
 bool RNNForwardMSIsFast(miopenDataType_t dataT, const int seqLen)
 {
-    if(miopen::IsEnabled(MIOPEN_ENV(MIOPEN_RNNFWD_exp)))
+    if(miopen::IsEnabled(MIOPEN_ENV(MIOPEN_RNNFWD_EXP)))
         return true;
 
-    if(dataT == miopenFloat && seqLen >= 32 && !(miopen::IsDisabled(MIOPEN_ENV(MIOPEN_RNNFWD_exp))))
+    if(dataT == miopenFloat && seqLen >= 32 && !(miopen::IsDisabled(MIOPEN_ENV(MIOPEN_RNNFWD_EXP))))
         return true;
     return false;
 }
@@ -192,7 +193,7 @@ miopenStatus_t ReducAddBias(miopen::Handle& handle,
                                                                   beta,  // beta
                                                                   red_type,
                                                                   false};
-
+                MIOPEN_LOG_T("CallGemm " << __LINE__);
                 miopenStatus_t gemm_status = CallGemm(handle,
                                                       gemm_desc,
                                                       red_workSpace,
@@ -263,6 +264,7 @@ void RNNDescriptor::RNNForwardMS(Handle& handle,
                                  miopenRNNFWDMode_t fwd_mode) const
 {
 #if MIOPEN_USE_GEMM && MIOPEN_BACKEND_HIP
+    MIOPEN_LOG_T("");
     std::vector<int> in_n;
     int in_vec  = xDesc.GetLengths()[1]; // input vector size
     int out_vec = yDesc.GetLengths()[1]; // output vector size
@@ -560,15 +562,18 @@ void RNNDescriptor::RNNForwardMS(Handle& handle,
                                            : static_cast<size_t>(start_b * InBuff_strides.batch);
         const auto in_ptr      = layer > 0 ? extra_space : x;
 
-        const miopenStatus_t gemm_status = CallGemm(handle,
-                                                    gemm_desc,
-                                                    in_ptr,
-                                                    x_in_offset,
-                                                    w,
-                                                    wx_off,
-                                                    extra_space,
-                                                    out_offset,
-                                                    GemmBackend_t::rocblas);
+        MIOPEN_LOG_T("CallGemm " << __LINE__);
+        const miopenStatus_t gemm_status = CallGemm(
+            handle,
+            gemm_desc,
+            in_ptr,
+            x_in_offset,
+            w,
+            wx_off,
+            extra_space,
+            out_offset,
+            GemmBackend_t::rocblas,
+            static_cast<int>(miopen::Value(MIOPEN_ENV(MIOPEN_ROCBLAS_SOLUTION_INDEX2)))); // 112
         if(gemm_status != miopenStatusSuccess)
             MIOPEN_THROW("GEMM execution failure");
     };
@@ -675,15 +680,19 @@ void RNNDescriptor::RNNForwardMS(Handle& handle,
 
         const auto hx_ptr = cur_time > 0 ? extra_space : hx;
 
-        const miopenStatus_t gemm_status = CallGemm(handle,
-                                                    gemm_desc_hx,
-                                                    hx_ptr,
-                                                    hx_ptr_offset,
-                                                    w,
-                                                    WeiBuf.get_matrix_h_off(layer),
-                                                    extra_space,
-                                                    RB_layer_save_points_off,
-                                                    GemmBackend_t::rocblas);
+        MIOPEN_LOG_T("CallGemm " << __LINE__);
+        const miopenStatus_t gemm_status =
+            CallGemm(handle,
+                     gemm_desc_hx,
+                     hx_ptr,
+                     hx_ptr_offset,
+                     w,
+                     WeiBuf.get_matrix_h_off(layer),
+                     extra_space,
+                     RB_layer_save_points_off,
+                     GemmBackend_t::rocblas,
+                     static_cast<int>(
+                         miopen::Value(MIOPEN_ENV(MIOPEN_ROCBLAS_SOLUTION_INDEX2)))); // 8 and 248
 
         if(gemm_status != miopenStatusSuccess)
             MIOPEN_THROW("GEMM execution failure");
@@ -1466,6 +1475,7 @@ void RNNDescriptor::RNNForwardInferencePacked(Handle& handle,
                                    xDesc[0].GetType(),
                                    false}; // RNN does not support determinism
 
+                MIOPEN_LOG_T("CallGemm " << __LINE__);
                 miopenStatus_t gemm_status = CallGemm(
                     handle, gemm_desc, x, 0, w, 0, workSpace, hid_shift, GemmBackend_t::rocblas);
 
@@ -1506,7 +1516,8 @@ void RNNDescriptor::RNNForwardInferencePacked(Handle& handle,
                                                               1, // beta
                                                               xDesc[0].GetType(),
                                                               false};
-            miopenStatus_t gemm_status       = CallGemm(handle,
+            MIOPEN_LOG_T("CallGemm " << __LINE__);
+            miopenStatus_t gemm_status = CallGemm(handle,
                                                   gemm_desc,
                                                   workSpace,
                                                   prelayer_shift,
@@ -1771,6 +1782,7 @@ void RNNDescriptor::RNNForwardInferencePacked(Handle& handle,
                                                                               xDesc[0].GetType(),
                                                                               false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -1819,6 +1831,7 @@ void RNNDescriptor::RNNForwardInferencePacked(Handle& handle,
                                                1, // beta
                                                xDesc[0].GetType(),
                                                false};
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -1866,6 +1879,7 @@ void RNNDescriptor::RNNForwardInferencePacked(Handle& handle,
                                                                               xDesc[0].GetType(),
                                                                               false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -2859,6 +2873,7 @@ void RNNDescriptor::RNNForwardTrainingPackedTensors(
                                                                   xDesc[0].GetType(),
                                                                   false};
 
+                MIOPEN_LOG_T("CallGemm " << __LINE__);
                 miopenStatus_t gemm_status = CallGemm(
                     handle, gemm_desc, x, 0, w, 0, reserveSpace, hid_shift, GemmBackend_t::rocblas);
 
@@ -2943,6 +2958,7 @@ void RNNDescriptor::RNNForwardTrainingPackedTensors(
                                                               xDesc[0].GetType(),
                                                               false};
 
+            MIOPEN_LOG_T("CallGemm " << __LINE__);
             miopenStatus_t gemm_status = CallGemm(handle,
                                                   gemm_desc,
                                                   reserveSpace,
@@ -3209,6 +3225,7 @@ void RNNDescriptor::RNNForwardTrainingPackedTensors(
                                                                               xDesc[0].GetType(),
                                                                               false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -3258,6 +3275,7 @@ void RNNDescriptor::RNNForwardTrainingPackedTensors(
                                                xDesc[0].GetType(),
                                                false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -3305,6 +3323,7 @@ void RNNDescriptor::RNNForwardTrainingPackedTensors(
                                                                               xDesc[0].GetType(),
                                                                               false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -4333,6 +4352,7 @@ void RNNDescriptor::RNNBackwardDataPackedTensors(
                                                               rnn_data_type,
                                                               false};
 
+            MIOPEN_LOG_T("CallGemm " << __LINE__);
             miopenStatus_t gemm_status = CallGemm(handle,
                                                   gemm_desc,
                                                   workSpace,
@@ -4560,6 +4580,7 @@ void RNNDescriptor::RNNBackwardDataPackedTensors(
                                                                               rnn_data_type,
                                                                               false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -5396,6 +5417,7 @@ void RNNDescriptor::RNNBackwardDataPackedTensors(
                                                    rnn_data_type,
                                                    false};
 
+                                MIOPEN_LOG_T("CallGemm " << __LINE__);
                                 miopenStatus_t gemm_status = CallGemm(
                                     handle,
                                     gemm_desc,
@@ -5464,6 +5486,7 @@ void RNNDescriptor::RNNBackwardDataPackedTensors(
                                                rnn_data_type,
                                                false};
 
+                            MIOPEN_LOG_T("CallGemm " << __LINE__);
                             miopenStatus_t gemm_status =
                                 CallGemm(handle,
                                          gemm_desc,
@@ -5595,6 +5618,7 @@ void RNNDescriptor::RNNBackwardDataPackedTensors(
                                                           0, // beta
                                                           rnn_data_type,
                                                           false};
+        MIOPEN_LOG_T("CallGemm " << __LINE__);
         miopenStatus_t gemm_status =
             CallGemm(handle, gemm_desc, workSpace, 0, w, 0, dx, 0, GemmBackend_t::rocblas);
         if(gemm_status != miopenStatusSuccess)
@@ -5922,6 +5946,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                                   rnn_data_t,
                                                                   false};
 
+                MIOPEN_LOG_T("CallGemm " << __LINE__);
                 miopenStatus_t gemm_status =
                     CallGemm(handle, gemm_desc, workSpace, 0, x, 0, dw, 0, GemmBackend_t::rocblas);
 
@@ -5958,6 +5983,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                               rnn_data_t,
                                                               false};
 
+            MIOPEN_LOG_T("CallGemm " << __LINE__);
             miopenStatus_t gemm_status = CallGemm(handle,
                                                   gemm_desc,
                                                   workSpace,
@@ -6199,6 +6225,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                                       rnn_data_t,
                                                                       false};
 
+                    MIOPEN_LOG_T("CallGemm " << __LINE__);
                     miopenStatus_t gemm_status = CallGemm(handle,
                                                           gemm_desc,
                                                           workSpace,
@@ -6241,6 +6268,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                            rnn_data_t,
                                            false};
 
+                        MIOPEN_LOG_T("CallGemm " << __LINE__);
                         miopenStatus_t gemm_status =
                             CallGemm(handle,
                                      gemm_desc,
@@ -6284,6 +6312,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                        rnn_data_t,
                                        false};
 
+                    MIOPEN_LOG_T("CallGemm " << __LINE__);
                     miopenStatus_t gemm_status = CallGemm(handle,
                                                           gemm_desc,
                                                           workSpace,
@@ -6351,6 +6380,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                                                   rnn_data_t,
                                                                                   false};
 
+                                MIOPEN_LOG_T("CallGemm " << __LINE__);
                                 miopenStatus_t gemm_status =
                                     CallGemm(handle,
                                              gemm_desc,
@@ -6393,6 +6423,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                    rnn_data_t,
                                                    false};
 
+                                MIOPEN_LOG_T("CallGemm " << __LINE__);
                                 miopenStatus_t gemm_status = CallGemm(
                                     handle,
                                     gemm_desc,
@@ -6432,6 +6463,7 @@ void RNNDescriptor::RNNBackwardWeightsPackedTensors(
                                                                                   rnn_data_t,
                                                                                   false};
 
+                                MIOPEN_LOG_T("CallGemm " << __LINE__);
                                 miopenStatus_t gemm_status =
                                     CallGemm(handle,
                                              gemm_desc,

@@ -278,7 +278,11 @@ std::ostream& operator<<(std::ostream& stream, const GemmDescriptor& gemm_desc)
                   << "beta " << gemm_desc.beta << ", "
                   << "dataType " << GetDataType(gemm_desc.dataType) << ", "
                   << "a_cast_type " << GetDataType(gemm_desc.a_cast_type) << ", "
-                  << "b_cast_type " << GetDataType(gemm_desc.b_cast_type) << "} ";
+                  << "b_cast_type " << GetDataType(gemm_desc.b_cast_type) << ", "
+                  << "deterministic " << gemm_desc.deterministic << ", "
+                  << "gfx90a_alt_impl " << gemm_desc.gfx90a_alt_impl << ", "
+                  << "fp8rounding_mode " << gemm_desc.conv_attributes.fp8rounding_mode.Get()
+                  << "}"; /// \ref gemm_descriptor_convolution_attribute
 }
 
 #if MIOPEN_USE_ROCBLAS
@@ -361,6 +365,148 @@ static GemmBackend_t enforce_gemm_backend(miopenDataType_t data_type,
     return gemm_backend_enforced;
 }
 
+static std::vector<rocblas_int> RocblasGetSolutions( //
+    std::function<void(rocblas_int, uint32_t)>& runner,
+    const Handle& handle,
+    GemmDescriptor gemm_desc,
+    ConstData_t A,
+    std::size_t a_offset,
+    ConstData_t B,
+    std::size_t b_offset,
+    Data_t C,
+    std::size_t c_offset,
+    const rocblas_datatype input_type,
+    const rocblas_datatype output_type,
+    const rocblas_datatype compute_type,
+    float alpha,
+    float beta)
+{
+    auto rb_handle = handle.rhandle().get();
+    rocblas_int n_rb_solutions;
+    rocblas_status rb_status;
+#if 0
+    rb_status = rocblas_gemm_ex_get_solutions_by_type( //
+        rb_handle,                                     //
+        input_type,                                    //
+        output_type,                                   //
+        compute_type,                                  //
+        rocblas_gemm_flags_none,                       //
+        nullptr,                                       //
+        &n_rb_solutions);
+    if(rb_status != rocblas_status::rocblas_status_success)
+        MIOPEN_THROW(miopenStatusInternalError,
+                     "rocblas_gemm_ex_get_solutions_by_type (1) error");
+    MIOPEN_LOG_I(n_rb_solutions << " rb_solutions found for types " << input_type << '/'
+                                << output_type << '/' << compute_type);
+
+    /// \note May return invalid numbers.
+    std::vector<rocblas_int> rb_solutions(n_rb_solutions);
+    rb_status = rocblas_gemm_ex_get_solutions_by_type( //
+        rb_handle,               //
+        input_type,              //
+        output_type,             //
+        compute_type,            //
+        rocblas_gemm_flags_none, //
+        rb_solutions.data(),     //
+        &n_rb_solutions);
+    if(rb_status != rocblas_status::rocblas_status_success)
+        MIOPEN_THROW(miopenStatusInternalError,
+                     "rocblas_gemm_ex_get_solutions_by_type (2) error");
+
+    std::vector<rocblas_int> rb_solutions_valid;
+    rb_solutions_valid.reserve(n_rb_solutions);
+    for(auto s : rb_solutions)
+    {
+        // Check solution is valid
+        runner(s, rocblas_gemm_flags_none);
+        if(rb_status != rocblas_status::rocblas_status_success)
+            continue;
+        rb_solutions_valid.push_back(s);
+    }
+#else
+    rb_status //
+        = rocblas_gemm_ex_get_solutions(
+            rb_handle,
+            gemm_desc.transA ? rocblas_operation_transpose : rocblas_operation_none,
+            gemm_desc.transB ? rocblas_operation_transpose : rocblas_operation_none,
+            gemm_desc.m,
+            gemm_desc.n,
+            gemm_desc.k,
+            &alpha,
+            static_cast<const float*>(A) + a_offset,
+            input_type,
+            gemm_desc.lda,
+            static_cast<const float*>(B) + b_offset,
+            input_type,
+            gemm_desc.ldb,
+            &beta,
+            static_cast<const float*>(C) + c_offset,
+            output_type,
+            gemm_desc.ldc,
+            static_cast<float*>(C) + c_offset,
+            output_type,
+            gemm_desc.ldc,
+            compute_type, // rocblas_datatype::rocblas_datatype_f32_r,
+            rocblas_gemm_algo::rocblas_gemm_algo_standard,
+            rocblas_gemm_flags_none,
+            nullptr,
+            &n_rb_solutions);
+    if(rb_status != rocblas_status::rocblas_status_success)
+        MIOPEN_THROW(miopenStatusInternalError, "rocblas_gemm_ex_get_solutions (1) error");
+    MIOPEN_LOG_I(n_rb_solutions << " rb_solutions found for gemm problem");
+
+    std::vector<rocblas_int> rb_solutions(n_rb_solutions);
+    rb_status //
+        = rocblas_gemm_ex_get_solutions(
+            rb_handle,
+            gemm_desc.transA ? rocblas_operation_transpose : rocblas_operation_none,
+            gemm_desc.transB ? rocblas_operation_transpose : rocblas_operation_none,
+            gemm_desc.m,
+            gemm_desc.n,
+            gemm_desc.k,
+            &alpha,
+            static_cast<const float*>(A) + a_offset,
+            input_type,
+            gemm_desc.lda,
+            static_cast<const float*>(B) + b_offset,
+            input_type,
+            gemm_desc.ldb,
+            &beta,
+            static_cast<const float*>(C) + c_offset,
+            output_type,
+            gemm_desc.ldc,
+            static_cast<float*>(C) + c_offset,
+            output_type,
+            gemm_desc.ldc,
+            compute_type, // rocblas_datatype::rocblas_datatype_f32_r,
+            rocblas_gemm_algo::rocblas_gemm_algo_standard,
+            rocblas_gemm_flags_none,
+            rb_solutions.data(),
+            &n_rb_solutions);
+    if(rb_status != rocblas_status::rocblas_status_success)
+        MIOPEN_THROW(miopenStatusInternalError, "rocblas_gemm_ex_get_solutions (2) error");
+
+    std::vector<rocblas_int> rb_solutions_valid;
+    rb_solutions_valid.reserve(n_rb_solutions);
+    for(auto s : rb_solutions)
+    {
+        // Check solution is valid
+        runner(s, rocblas_gemm_flags_check_solution_index);
+        if(rb_status != rocblas_status::rocblas_status_success)
+            continue;
+        rb_solutions_valid.push_back(s);
+    }
+#endif
+    std::sort(rb_solutions_valid.begin(), rb_solutions_valid.end());
+    MIOPEN_LOG_I(rb_solutions_valid.size() << " valid rb_solutions for " << gemm_desc);
+#if 0
+    for(const auto s : rb_solutions_valid)
+        std::cout << s << ' ';
+    std::cout << std::endl;
+#endif
+    return rb_solutions_valid;
+}
+
 miopenStatus_t CallGemm(const Handle& handle,
                         GemmDescriptor gemm_desc,
                         ConstData_t A,
@@ -369,9 +515,26 @@ miopenStatus_t CallGemm(const Handle& handle,
                         std::size_t b_offset,
                         Data_t C,
                         std::size_t c_offset,
-                        GemmBackend_t gemm_backend)
+                        GemmBackend_t gemm_backend,
+                        const int rb_solution_index2)
 {
     MIOPEN_LOG_I2("gemm_desc: " << gemm_desc);
+#if 0 // FIXME
+    if(rb_solution_index2 > 0)
+        MIOPEN_LOG_I2("rb_solution_index2 " << rb_solution_index2);
+#endif
+
+    static const std::string tune_for_248 = // 310 (plain) and 1067 (_by_type) configs
+        "{isColMajor 0, transA 0, transB 1, m 1024, n 4000, k 1000, lda 6000, ldb 1000, ldc 6000, "
+        "batch_count 1, strideA 0, strideB 0, strideC 0, alpha 1, beta 1, dataType float, "
+        "a_cast_type float, b_cast_type float, deterministic 0, gfx90a_alt_impl 0, "
+        "fp8rounding_mode 1}";
+    static const std::string tune_for_112 = // 310 (plain) and ? (_by_type) configs
+        "{isColMajor 0, transA 0, transB 1, m 2048, n 4000, k 1000, lda 6000, ldb 1000, ldc 6000, "
+        "batch_count 1, strideA 0, strideB 0, strideC 0, alpha 1, beta 1, dataType float, "
+        "a_cast_type float, b_cast_type float, deterministic 0, gfx90a_alt_impl 0, "
+        "fp8rounding_mode 1}";
+    const bool use_rocblas_tuning = (tune_for_248 == gemm_desc.MakeNetworkConfig().ToString());
 
     gemm_backend = enforce_gemm_backend(gemm_desc.dataType, gemm_backend);
 
@@ -543,35 +706,77 @@ miopenStatus_t CallGemm(const Handle& handle,
         break;
 
         case miopenFloat: {
+            // MIOPEN_LOG_I("miopen_rocblas_gemm_ex");
             float alpha = gemm_desc.alpha;
             float beta  = gemm_desc.beta;
 
-            rb_status = miopen_rocblas_gemm_ex(
-                handle,
-                gemm_desc,
-                gemm_desc.transA ? rocblas_operation_transpose : rocblas_operation_none,
-                gemm_desc.transB ? rocblas_operation_transpose : rocblas_operation_none,
-                gemm_desc.m,
-                gemm_desc.n,
-                gemm_desc.k,
-                &alpha,
-                static_cast<const float*>(A) + a_offset,
-                rocblas_datatype::rocblas_datatype_f32_r,
-                gemm_desc.lda,
-                static_cast<const float*>(B) + b_offset,
-                rocblas_datatype::rocblas_datatype_f32_r,
-                gemm_desc.ldb,
-                &beta,
-                static_cast<const float*>(C) + c_offset,
-                rocblas_datatype::rocblas_datatype_f32_r,
-                gemm_desc.ldc,
-                static_cast<float*>(C) + c_offset,
-                rocblas_datatype::rocblas_datatype_f32_r,
-                gemm_desc.ldc,
-                rocBlasComputeType(gemm_desc), // rocblas_datatype::rocblas_datatype_f32_r,
-                rocblas_gemm_algo::rocblas_gemm_algo_standard,
-                0,
-                0);
+            const rocblas_datatype input_type   = rocblas_datatype::rocblas_datatype_f32_r;
+            const rocblas_datatype output_type  = rocblas_datatype::rocblas_datatype_f32_r;
+            const rocblas_datatype compute_type = rocBlasComputeType(gemm_desc);
+
+            std::function<void(rocblas_int, uint32_t)> runner //
+                = [&](rocblas_int rb_solution, uint32_t rb_flags) {
+                      rb_status = miopen_rocblas_gemm_ex(
+                          handle,
+                          gemm_desc,
+                          gemm_desc.transA ? rocblas_operation_transpose : rocblas_operation_none,
+                          gemm_desc.transB ? rocblas_operation_transpose : rocblas_operation_none,
+                          gemm_desc.m,
+                          gemm_desc.n,
+                          gemm_desc.k,
+                          &alpha,
+                          static_cast<const float*>(A) + a_offset,
+                          input_type,
+                          gemm_desc.lda,
+                          static_cast<const float*>(B) + b_offset,
+                          input_type,
+                          gemm_desc.ldb,
+                          &beta,
+                          static_cast<const float*>(C) + c_offset,
+                          output_type,
+                          gemm_desc.ldc,
+                          static_cast<float*>(C) + c_offset,
+                          output_type,
+                          gemm_desc.ldc,
+                          compute_type, // rocblas_datatype::rocblas_datatype_f32_r,
+                          rocblas_gemm_algo::rocblas_gemm_algo_standard,
+                          rb_solution,
+                          rb_flags);
+                  };
+
+            rocblas_int rb_solution = 0;
+            if(use_rocblas_tuning)
+            {
+                static const std::vector<rocblas_int> rb_solutions_valid =
+                    RocblasGetSolutions(runner,
+                                        handle,
+                                        gemm_desc,
+                                        A,
+                                        a_offset,
+                                        B,
+                                        b_offset,
+                                        C,
+                                        c_offset,
+                                        input_type,
+                                        output_type,
+                                        compute_type,
+                                        alpha,
+                                        beta);
+                if(rb_solution_index2 >= 0)
+                {
+                    if(rb_solution_index2 >= rb_solutions_valid.size())
+                        MIOPEN_THROW(miopenStatusInternalError,
+                                     "CallGemm: rb_solution_index2 is too big");
+                    rb_solution            = rb_solutions_valid[rb_solution_index2];
+                    static const bool once = [&]() {
+                        MIOPEN_LOG_I("rb_solution = " << rb_solution << " = rb_solutions_valid["
+                                                      << rb_solution_index2 << "]");
+                        return true;
+                    }();
+                    std::ignore = once;
+                }
+            }
+            runner(rb_solution, rocblas_gemm_flags_none);
         }
         break;
 

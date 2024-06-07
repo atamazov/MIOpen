@@ -70,6 +70,11 @@ struct GemmDescriptor
     bool gfx90a_alt_impl;
     miopenDataType_t a_cast_type;
     miopenDataType_t b_cast_type;
+    /// \anchor gemm_descriptor_convolution_attribute
+    /// \todo Only fp8rounding_mode is used from conv_attributes.
+    /// And GEMM impl should not depend on convolution-specific
+    /// classes/structures. I recommend replacing ConvolutionAttribute
+    /// with fp8rounding_mode variable here. --atamazov 4 June 2024.
     ConvolutionAttribute conv_attributes;
     GemmDescriptor() = delete;
     GemmDescriptor(bool isColMajor_,
@@ -112,6 +117,15 @@ struct GemmDescriptor
     {
     }
 
+    /// \todo The simplest implemenation. The returned value is intended for
+    /// human readers, and therefore possibly too large. --atamazov 4 June 2024
+    NetworkConfig MakeNetworkConfig() const
+    {
+        std::ostringstream ss;
+        ss << *this;
+        return NetworkConfig{ss.str()};
+    }
+
     friend std::ostream& operator<<(std::ostream& stream, const GemmDescriptor& gemm_desc);
 };
 
@@ -124,7 +138,8 @@ miopenStatus_t CallGemm(const Handle& handle,
                         std::size_t b_offset,
                         Data_t C,
                         std::size_t c_offset,
-                        GemmBackend_t gemm_backend = GemmBackend_t::rocblas);
+                        GemmBackend_t gemm_backend = GemmBackend_t::rocblas,
+                        int rb_solution_index2     = -1);
 
 MIOPEN_EXPORT
 miopenStatus_t CallGemmStridedBatched(const Handle& handle,
