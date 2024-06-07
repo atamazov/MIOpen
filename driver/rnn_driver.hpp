@@ -789,9 +789,10 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
     if(inflags.GetValueInt("forw") != 0 && !(inflags.GetValueInt("forw") & 1))
         return miopenStatusSuccess;
 
-    float kernel_total_time = 0;
-    float kernel_first_time = 0;
-    float wall_first_time   = 0;
+    float gpu_total_time    = 0;
+    float gpu_cold_time     = 0;
+    float wall_cold_time    = 0;
+    constexpr int COLD_RUNS = 1;
     Timer2 t;
 
     if(inflags.GetValueInt("fwdtype") == 1 && inflags.GetValueInt("forw") != 1)
@@ -865,33 +866,40 @@ int RNNDriver<Tgpu, Tref>::RunForwardGPU()
 
         float time = 0;
         miopenGetKernelTime(GetHandle(), &time);
-        kernel_total_time += time;
-        if(i == 0)
+        gpu_total_time += time;
+        if(i < COLD_RUNS)
         {
-            kernel_first_time = time;
-            wall_first_time   = t.interim_time_ms();
+            gpu_cold_time += time;
+            if(i == COLD_RUNS - 1)
+                wall_cold_time = t.interim_time_ms();
         }
     }
     t.stop();
 
-    auto gpu_time      = kernel_first_time;
-    auto wall_time     = wall_first_time;
-    auto aux_wall_time = 0.0f;
-    if(num_iter > 1)
+    auto gpu_time                = gpu_cold_time / static_cast<float>(COLD_RUNS);
+    auto wall_time               = wall_cold_time / static_cast<float>(COLD_RUNS);
+    auto wall_time_cold_overhead = 0.0f;
+    auto gpu_time_cold_overhead  = 0.0f;
+    if(num_iter > COLD_RUNS)
     {
-        gpu_time      = (kernel_total_time - kernel_first_time) / (num_iter - 1);
-        wall_time     = (t.gettime_ms() - wall_first_time) / (num_iter - 1);
-        aux_wall_time = wall_first_time - wall_time;
+        gpu_time                = (gpu_total_time - gpu_cold_time) / (num_iter - COLD_RUNS);
+        wall_time               = (t.gettime_ms() - wall_cold_time) / (num_iter - COLD_RUNS);
+        wall_time_cold_overhead = wall_cold_time - wall_time * static_cast<float>(COLD_RUNS);
+        gpu_time_cold_overhead  = gpu_cold_time - gpu_time * static_cast<float>(COLD_RUNS);
     }
 
     if(is_time)
-        printf("GPU Kernel Time Forward RNN Elapsed: %f ms\n", gpu_time);
-
+    {
+        printf("GPU Kernel Time Forward RNN Elapsed: %f ms", gpu_time);
+        if(num_iter > COLD_RUNS)
+            printf(", First Call Overhead: %f ms", gpu_time_cold_overhead);
+        printf("\n");
+    }
     if(is_wall)
     {
         printf("Wall-clock Time Forward RNN Elapsed: %f ms", wall_time);
-        if(num_iter > 1)
-            printf(", First Call Overhead: %f ms", aux_wall_time);
+        if(num_iter > COLD_RUNS)
+            printf(", First Call Overhead: %f ms", wall_time_cold_overhead);
         printf("\n");
     }
 
